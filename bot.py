@@ -9,11 +9,10 @@ TMDB_API_KEY = "043f357a705bad3b63ba075408d399a2"
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# --- ОБМАНКА ДЛЯ RENDER ---
+# --- ОБМАНКА ДЛЯ RENDER (Health Check) ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
-        self.send_header('Content-type', 'text/html')
         self.end_headers()
         self.wfile.write(b"Bot is active")
 
@@ -46,10 +45,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kbd = [[KeyboardButton("🔥 Популярные"), KeyboardButton("🆕 Новинки")],
            [KeyboardButton("📅 По годам"), KeyboardButton("🎲 Рандом")],
            [KeyboardButton("📌 Мой список")]]
-    await update.message.reply_text("🎬 *CineIntellect v51.9.8*\nФильтрация лишнего контента включена!", 
+    await update.message.reply_text("🎬 *CineIntellect v51.9.9*\nБот стабилизирован. Всё работает!", 
                                    reply_markup=ReplyKeyboardMarkup(kbd, resize_keyboard=True), parse_mode="Markdown")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text: return  # ЗАЩИТА ОТ ОШИБКИ NoneType
+    
     text = update.message.text
     if text == "🔥 Популярные":
         data = await fetch_tmdb("trending/movie/week")
@@ -97,7 +98,6 @@ async def send_list(update, title, items, force_type=None):
         m_type = force_type or i.get('media_type', 'movie')
         if name: kbd.append([InlineKeyboardButton(f"🎬 {name}", callback_data=f"{m_type}:{i['id']}")])
     if kbd: await update.message.reply_text(title, reply_markup=InlineKeyboardMarkup(kbd))
-    else: await update.message.reply_text("😔 Список пуст.")
 
 async def show_card(target, context, mid, m_type):
     m = await fetch_tmdb(f"{m_type}/{mid}")
@@ -135,33 +135,24 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pid = q.data.split(":")[1]
         data = await fetch_tmdb(f"person/{pid}/combined_credits")
         cast = data.get('cast', []) + data.get('crew', [])
-        
         unique_movies = {}
         stop_words = ["academy awards", "ceremony", "oscar", "video documentary", "the 7", "the 8", "the 9"]
-        
         for m in cast:
             mid = m.get('id')
             title = m.get('title') or m.get('name', '')
-            # ФИЛЬТР: убираем документалки (99), спецвыпуски и церемонии
             is_doc = 99 in m.get('genre_ids', [])
             is_ceremony = any(word in title.lower() for word in stop_words)
-            
             if mid not in unique_movies and title and not is_doc and not is_ceremony:
                 unique_movies[mid] = m
-        
         sorted_m = sorted(unique_movies.values(), key=lambda x: x.get('popularity', 0), reverse=True)[:30]
-        
         kbd = []
         for i in range(0, len(sorted_m), 2):
-            m1 = sorted_m[i]
-            btn1 = InlineKeyboardButton(f"🎬 {m1.get('title') or m1.get('name')}", callback_data=f"{m1.get('media_type','movie')}:{m1['id']}")
+            m1 = sorted_m[i]; btn1 = InlineKeyboardButton(f"🎬 {m1.get('title') or m1.get('name')}", callback_data=f"{m1.get('media_type','movie')}:{m1['id']}")
             row = [btn1]
             if i+1 < len(sorted_m):
-                m2 = sorted_m[i+1]
-                btn2 = InlineKeyboardButton(f"🎬 {m2.get('title') or m2.get('name')}", callback_data=f"{m2.get('media_type','movie')}:{m2['id']}")
+                m2 = sorted_m[i+1]; btn2 = InlineKeyboardButton(f"🎬 {m2.get('title') or m2.get('name')}", callback_data=f"{m2.get('media_type','movie')}:{m2['id']}")
                 row.append(btn2)
             kbd.append(row)
-            
         await q.message.edit_text(f"🎥 Лучшие работы деятеля:", reply_markup=InlineKeyboardMarkup(kbd))
     elif ":" in q.data:
         m_type, mid = q.data.split(":")
@@ -173,5 +164,5 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("🚀 БОТ v51.9.8 ЗАПУЩЕН!")
+    print("🚀 БОТ v51.9.9 ЗАПУЩЕН!")
     app.run_polling()
