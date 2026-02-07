@@ -9,7 +9,7 @@ TMDB_API_KEY = "043f357a705bad3b63ba075408d399a2"
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# --- ОБМАНКА ДЛЯ RENDER (Health Check) ---
+# --- ОБМАНКА ДЛЯ RENDER ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -45,12 +45,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kbd = [[KeyboardButton("🔥 Популярные"), KeyboardButton("🆕 Новинки")],
            [KeyboardButton("📅 По годам"), KeyboardButton("🎲 Рандом")],
            [KeyboardButton("📌 Мой список")]]
-    await update.message.reply_text("🎬 *CineIntellect v51.9.9*\nБот стабилизирован. Всё работает!", 
+    await update.message.reply_text("🎬 *CineIntellect v51.10.0*\nТеперь я умею советовать похожие фильмы!", 
                                    reply_markup=ReplyKeyboardMarkup(kbd, resize_keyboard=True), parse_mode="Markdown")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text: return  # ЗАЩИТА ОТ ОШИБКИ NoneType
-    
+    if not update.message or not update.message.text: return
     text = update.message.text
     if text == "🔥 Популярные":
         data = await fetch_tmdb("trending/movie/week")
@@ -87,17 +86,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 name = item.get('title') or item.get('name')
                 icon = "🎬" if m_type == 'movie' else "📺"
                 kbd.append([InlineKeyboardButton(f"{icon} {name}", callback_data=f"{m_type}:{mid}")])
-        
-        if kbd: await update.message.reply_text(f"🔎 Результаты по запросу '{text}':", reply_markup=InlineKeyboardMarkup(kbd))
-        else: await update.message.reply_text("😔 Ничего не найдено.")
+        if kbd: await update.message.reply_text(f"🔎 Результаты:", reply_markup=InlineKeyboardMarkup(kbd))
 
 async def send_list(update, title, items, force_type=None):
     kbd = []
-    for i in items[:15]:
+    for i in items[:14]:
         name = i.get('title') or i.get('name')
         m_type = force_type or i.get('media_type', 'movie')
         if name: kbd.append([InlineKeyboardButton(f"🎬 {name}", callback_data=f"{m_type}:{i['id']}")])
-    if kbd: await update.message.reply_text(title, reply_markup=InlineKeyboardMarkup(kbd))
+    # Группируем по 2 в ряд
+    grid = [kbd[i:i+2] for i in range(0, len(kbd), 2)]
+    if grid: await update.message.reply_text(title, reply_markup=InlineKeyboardMarkup(grid))
 
 async def show_card(target, context, mid, m_type):
     m = await fetch_tmdb(f"{m_type}/{mid}")
@@ -105,8 +104,11 @@ async def show_card(target, context, mid, m_type):
     title = m.get('title') or m.get('name')
     url = f"https://www.google.com/search?q={urllib.parse.quote(title + ' смотреть онлайн')}"
     cap = f"🎥 *{title}*\n⭐ Рейтинг: {m.get('vote_average', 0):.1f}\n\n{m.get('overview', '')[:500]}..."
+    
     kbd = [[InlineKeyboardButton("📌 В список", callback_data=f"add:{mid}:{title[:20]}")],
+           [InlineKeyboardButton("🎭 Похожее", callback_data=f"similar:{m_type}:{mid}")],
            [InlineKeyboardButton("🍿 Смотреть", url=url)]]
+    
     poster = f"https://image.tmdb.org/t/p/w500{m.get('poster_path')}"
     chat_id = target.message.chat_id if hasattr(target, 'message') else target.effective_chat.id
     try:
@@ -119,14 +121,19 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if q.data.startswith("y:"):
         y = q.data.split(":")[1]
         data = await fetch_tmdb("discover/movie", {"primary_release_year": y, "sort_by": "popularity.desc"})
-        results = data.get('results', [])[:20]
-        kbd = []
-        for i in range(0, len(results), 2):
-            row = [InlineKeyboardButton(f"🎬 {results[i]['title']}", callback_data=f"movie:{results[i]['id']}")]
-            if i+1 < len(results):
-                row.append(InlineKeyboardButton(f"🎬 {results[i+1]['title']}", callback_data=f"movie:{results[i+1]['id']}"))
-            kbd.append(row)
+        res = data.get('results', [])[:20]
+        kbd = [[InlineKeyboardButton(f"🎬 {res[i]['title']}", callback_data=f"movie:{res[i]['id']}"),
+                InlineKeyboardButton(f"🎬 {res[i+1]['title']}", callback_data=f"movie:{res[i+1]['id']}")] 
+               for i in range(0, len(res)-1, 2)]
         await q.message.edit_text(f"📅 Хиты {y}:", reply_markup=InlineKeyboardMarkup(kbd))
+    elif q.data.startswith("similar:"):
+        _, m_type, mid = q.data.split(":")
+        data = await fetch_tmdb(f"{m_type}/{mid}/recommendations")
+        res = data.get('results', [])[:10]
+        if not res: await context.bot.send_message(q.message.chat_id, "😔 Похожих фильмов не нашлось.")
+        else:
+            kbd = [[InlineKeyboardButton(f"🎬 {i.get('title') or i.get('name')}", callback_data=f"{m_type}:{i['id']}")] for i in res]
+            await context.bot.send_message(q.message.chat_id, "🎭 Рекомендуем посмотреть:", reply_markup=InlineKeyboardMarkup(kbd))
     elif q.data.startswith("add:"):
         _, mid, title = q.data.split(":", 2)
         conn = sqlite3.connect('movies.db'); conn.execute("INSERT INTO watchlist VALUES (?, ?, ?)", (q.from_user.id, mid, title)); conn.commit(); conn.close()
@@ -135,25 +142,18 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pid = q.data.split(":")[1]
         data = await fetch_tmdb(f"person/{pid}/combined_credits")
         cast = data.get('cast', []) + data.get('crew', [])
-        unique_movies = {}
-        stop_words = ["academy awards", "ceremony", "oscar", "video documentary", "the 7", "the 8", "the 9"]
+        unique = {}
+        stop = ["academy awards", "ceremony", "oscar", "video documentary"]
         for m in cast:
             mid = m.get('id')
             title = m.get('title') or m.get('name', '')
-            is_doc = 99 in m.get('genre_ids', [])
-            is_ceremony = any(word in title.lower() for word in stop_words)
-            if mid not in unique_movies and title and not is_doc and not is_ceremony:
-                unique_movies[mid] = m
-        sorted_m = sorted(unique_movies.values(), key=lambda x: x.get('popularity', 0), reverse=True)[:30]
-        kbd = []
-        for i in range(0, len(sorted_m), 2):
-            m1 = sorted_m[i]; btn1 = InlineKeyboardButton(f"🎬 {m1.get('title') or m1.get('name')}", callback_data=f"{m1.get('media_type','movie')}:{m1['id']}")
-            row = [btn1]
-            if i+1 < len(sorted_m):
-                m2 = sorted_m[i+1]; btn2 = InlineKeyboardButton(f"🎬 {m2.get('title') or m2.get('name')}", callback_data=f"{m2.get('media_type','movie')}:{m2['id']}")
-                row.append(btn2)
-            kbd.append(row)
-        await q.message.edit_text(f"🎥 Лучшие работы деятеля:", reply_markup=InlineKeyboardMarkup(kbd))
+            if mid not in unique and title and 99 not in m.get('genre_ids', []) and not any(w in title.lower() for w in stop):
+                unique[mid] = m
+        sorted_m = sorted(unique.values(), key=lambda x: x.get('popularity', 0), reverse=True)[:26]
+        kbd = [[InlineKeyboardButton(f"🎬 {sorted_m[i].get('title') or sorted_m[i].get('name')}", callback_data=f"{sorted_m[i].get('media_type','movie')}:{sorted_m[i]['id']}"),
+                InlineKeyboardButton(f"🎬 {sorted_m[i+1].get('title') or sorted_m[i+1].get('name')}", callback_data=f"{sorted_m[i+1].get('media_type','movie')}:{sorted_m[i+1]['id']}")]
+               for i in range(0, len(sorted_m)-1, 2)]
+        await q.message.edit_text(f"🎥 Лучшие работы:", reply_markup=InlineKeyboardMarkup(kbd))
     elif ":" in q.data:
         m_type, mid = q.data.split(":")
         await show_card(q, context, mid, m_type)
@@ -164,5 +164,5 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("🚀 БОТ v51.9.9 ЗАПУЩЕН!")
+    print("🚀 БОТ v51.10.0 ЗАПУЩЕН!")
     app.run_polling()
