@@ -46,7 +46,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kbd = [[KeyboardButton("🔥 Популярные"), KeyboardButton("🆕 Новинки")],
            [KeyboardButton("📅 По годам"), KeyboardButton("🎲 Рандом")],
            [KeyboardButton("📌 Мой список")]]
-    await update.message.reply_text("🎬 *CineIntellect v51.9.7*\nРасширенный поиск по фильмографии активирован!", 
+    await update.message.reply_text("🎬 *CineIntellect v51.9.8*\nФильтрация лишнего контента включена!", 
                                    reply_markup=ReplyKeyboardMarkup(kbd, resize_keyboard=True), parse_mode="Markdown")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -119,7 +119,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if q.data.startswith("y:"):
         y = q.data.split(":")[1]
         data = await fetch_tmdb("discover/movie", {"primary_release_year": y, "sort_by": "popularity.desc"})
-        # Делаем сетку 2 в ряд для годов
         results = data.get('results', [])[:20]
         kbd = []
         for i in range(0, len(results), 2):
@@ -136,16 +135,22 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pid = q.data.split(":")[1]
         data = await fetch_tmdb(f"person/{pid}/combined_credits")
         cast = data.get('cast', []) + data.get('crew', [])
-        # Очистка дубликатов и сортировка по популярности
+        
         unique_movies = {}
+        stop_words = ["academy awards", "ceremony", "oscar", "video documentary", "the 7", "the 8", "the 9"]
+        
         for m in cast:
             mid = m.get('id')
-            if mid not in unique_movies and (m.get('title') or m.get('name')):
+            title = m.get('title') or m.get('name', '')
+            # ФИЛЬТР: убираем документалки (99), спецвыпуски и церемонии
+            is_doc = 99 in m.get('genre_ids', [])
+            is_ceremony = any(word in title.lower() for word in stop_words)
+            
+            if mid not in unique_movies and title and not is_doc and not is_ceremony:
                 unique_movies[mid] = m
         
-        sorted_m = sorted(unique_movies.values(), key=lambda x: x.get('popularity', 0), reverse=True)[:26]
+        sorted_m = sorted(unique_movies.values(), key=lambda x: x.get('popularity', 0), reverse=True)[:30]
         
-        # Формируем сетку кнопок 2 в ряд
         kbd = []
         for i in range(0, len(sorted_m), 2):
             m1 = sorted_m[i]
@@ -157,7 +162,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 row.append(btn2)
             kbd.append(row)
             
-        await q.message.edit_text(f"🎥 Топ работ деятеля:", reply_markup=InlineKeyboardMarkup(kbd))
+        await q.message.edit_text(f"🎥 Лучшие работы деятеля:", reply_markup=InlineKeyboardMarkup(kbd))
     elif ":" in q.data:
         m_type, mid = q.data.split(":")
         await show_card(q, context, mid, m_type)
@@ -168,5 +173,5 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("🚀 БОТ v51.9.7 ЗАПУЩЕН!")
+    print("🚀 БОТ v51.9.8 ЗАПУЩЕН!")
     app.run_polling()
