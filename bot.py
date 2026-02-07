@@ -164,4 +164,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     print("🚀 БОТ v51.9.4 ЗАПУЩЕН! Нажмите /start в Telegram.")
+
     app.run_polling()
