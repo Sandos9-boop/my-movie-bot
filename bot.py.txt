@@ -1,0 +1,167 @@
+import asyncio, logging, re, urllib.parse, aiohttp, sqlite3, random, os
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+
+# --- НАСТРОЙКИ (Ключи вшиты для стабильности в облаке) ---
+BOT_TOKEN = "8262668090:AAE3UJkjIeEVPKotGV1HfGyfkWtNP9TDnaQ"
+TMDB_API_KEY = "043f357a705bad3b63ba075408d399a2"
+
+logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
+
+# --- ИНИЦИАЛИЗАЦИЯ БАЗЫ ---
+def init_db():
+    conn = sqlite3.connect('movies.db')
+    conn.execute('CREATE TABLE IF NOT EXISTS watchlist (user_id INTEGER, movie_id TEXT, title TEXT)')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# --- ФУНКЦИЯ ЗАПРОСОВ К TMDB ---
+async def fetch_tmdb(endpoint, params={}):
+    p = {"api_key": TMDB_API_KEY, "language": "ru-RU"}
+    p.update(params)
+    async with aiohttp.ClientSession() as session:
+        url = f"https://api.themoviedb.org/3/{endpoint}"
+        try:
+            async with session.get(url, params=p, timeout=10) as r:
+                if r.status == 200:
+                    return await r.json()
+        except Exception as e:
+            logging.error(f"Ошибка TMDB: {e}")
+        return {}
+
+# --- КОМАНДА START ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kbd = [
+        [KeyboardButton("🔥 Популярные"), KeyboardButton("🆕 Новинки")],
+        [KeyboardButton("📅 По годам"), KeyboardButton("🎲 Рандом")],
+        [KeyboardButton("📌 Мой список")]
+    ]
+    await update.message.reply_text(
+        "🎬 *CineIntellect v51.9.4*\nБот успешно запущен в облаке и готов к работе!", 
+        reply_markup=ReplyKeyboardMarkup(kbd, resize_keyboard=True), 
+        parse_mode="Markdown"
+    )
+
+# --- ОБРАБОТКА ТЕКСТА ---
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    
+    if text == "🔥 Популярные":
+        data = await fetch_tmdb("trending/movie/week")
+        await send_list(update, "🔥 Популярные фильмы недели:", data.get('results', []), "movie")
+    
+    elif text == "🆕 Новинки":
+        # Запрашиваем новинки сериалов (On The Air)
+        data = await fetch_tmdb("tv/on_the_air")
+        await send_list(update, "🆕 Новинки сериалов (в эфире):", data.get('results', []), "tv")
+
+    elif text == "🎲 Рандом":
+        page = random.randint(1, 15)
+        data = await fetch_tmdb("movie/top_rated", {"page": page})
+        if data.get('results'):
+            m = random.choice(data['results'])
+            await show_card(update, context, m['id'], "movie")
+
+    elif text == "📅 По годам":
+        kbd = [
+            [InlineKeyboardButton("2024", callback_data="y:2024"), InlineKeyboardButton("2023", callback_data="y:2023")],
+            [InlineKeyboardButton("2022", callback_data="y:2022"), InlineKeyboardButton("2015", callback_data="y:2015")]
+        ]
+        await update.message.reply_text("Выберите год для поиска хитов:", reply_markup=InlineKeyboardMarkup(kbd))
+
+    elif text == "📌 Мой список":
+        conn = sqlite3.connect('movies.db')
+        res = conn.execute("SELECT movie_id, title FROM watchlist WHERE user_id = ?", (update.effective_user.id,)).fetchall()
+        conn.close()
+        if not res:
+            await update.message.reply_text("Ваш список избранного пока пуст.")
+        else:
+            txt = "📌 *Ваш список:*\n\n" + "\n".join([f"• {r[1]}" for r in res])
+            await update.message.reply_text(txt, parse_mode="Markdown")
+    
+    else:
+        # Поиск по любому тексту (название, актер, режиссер)
+        data = await fetch_tmdb("search/multi", {"query": text})
+        await send_list(update, f"🔎 Результаты по запросу '{text}':", data.get('results', []))
+
+# --- ОТПРАВКА СПИСКА КНОПКАМИ ---
+async def send_list(update, title, items, force_type=None):
+    kbd = []
+    for i in items[:10]:
+        name = i.get('title') or i.get('name')
+        m_type = force_type or i.get('media_type', 'movie')
+        if name and m_type:
+            kbd.append([InlineKeyboardButton(f"🎬 {name}", callback_data=f"{m_type}:{i['id']}")])
+    
+    if kbd:
+        await update.message.reply_text(title, reply_markup=InlineKeyboardMarkup(kbd))
+    else:
+        await update.message.reply_text("😔 Ничего не удалось найти по этому запросу.")
+
+# --- ПОКАЗ КАРТОЧКИ ФИЛЬМА ---
+async def show_card(target, context, mid, m_type):
+    m = await fetch_tmdb(f"{m_type}/{mid}")
+    if not m: return
+    
+    title = m.get('title') or m.get('name')
+    rating = m.get('vote_average', 0)
+    date = m.get('release_date') or m.get('first_air_date') or "Неизвестно"
+    overview = m.get('overview', 'Описание отсутствует.')
+    
+    search_url = f"https://www.google.com/search?q={urllib.parse.quote(title + ' смотреть онлайн')}"
+    
+    caption = f"🎥 *{title}*\n⭐ Рейтинг: {rating:.1f} | 📅 Дата: {date}\n\n{overview[:600]}..."
+    
+    kbd = [
+        [InlineKeyboardButton("📌 В список", callback_data=f"add:{mid}:{title[:20]}")],
+        [InlineKeyboardButton("🍿 Смотреть онлайн", url=search_url)]
+    ]
+    
+    poster_path = m.get('poster_path')
+    chat_id = target.message.chat_id if hasattr(target, 'message') else target.effective_chat.id
+    
+    try:
+        if poster_path:
+            poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}"
+            await context.bot.send_photo(chat_id, poster_url, caption=caption, reply_markup=InlineKeyboardMarkup(kbd), parse_mode="Markdown")
+        else:
+            await context.bot.send_message(chat_id, caption, reply_markup=InlineKeyboardMarkup(kbd), parse_mode="Markdown")
+    except Exception as e:
+        logging.error(f"Ошибка при отправке карточки: {e}")
+
+# --- ОБРАБОТКА НАЖАТИЙ КНОПОК ---
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    
+    if q.data.startswith("y:"):
+        year = q.data.split(":")[1]
+        data = await fetch_tmdb("discover/movie", {"primary_release_year": year, "sort_by": "popularity.desc"})
+        items = data.get('results', [])[:10]
+        kbd = [[InlineKeyboardButton(f"🎬 {i['title']}", callback_data=f"movie:{i['id']}")] for i in items]
+        await q.message.edit_text(f"📅 Самые популярные фильмы {year} года:", reply_markup=InlineKeyboardMarkup(kbd))
+    
+    elif q.data.startswith("add:"):
+        _, mid, title = q.data.split(":", 2)
+        conn = sqlite3.connect('movies.db')
+        conn.execute("INSERT INTO watchlist VALUES (?, ?, ?)", (q.from_user.id, mid, title))
+        conn.commit()
+        conn.close()
+        await context.bot.send_message(q.message.chat_id, f"✅ Добавлено в список: {title}")
+        
+    elif ":" in q.data:
+        m_type, mid = q.data.split(":")
+        await show_card(q, context, mid, m_type)
+
+# --- ЗАПУСК ---
+if __name__ == "__main__":
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(callback_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    print("🚀 БОТ v51.9.4 ЗАПУЩЕН! Нажмите /start в Telegram.")
+    app.run_polling()
