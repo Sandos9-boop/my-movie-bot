@@ -23,12 +23,20 @@ def run_health_check():
     server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
     server.serve_forever()
 
-# --- REDDIT LOGIC ---
+# --- УЛУЧШЕННАЯ ЛОГИКА REDDIT ---
 async def get_reddit_news(limit=10):
     try:
-        feed = feedparser.parse(f"{REDDIT_RSS}?t={random.random()}", agent='Mozilla/5.0')
-        return feed.entries[:limit]
-    except:
+        # Используем aiohttp для запроса с заголовками браузера
+        async with aiohttp.ClientSession() as session:
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+            async with session.get(f"{REDDIT_RSS}?t={random.random()}", headers=headers, timeout=10) as resp:
+                if resp.status == 200:
+                    content = await resp.text()
+                    feed = feedparser.parse(content)
+                    return feed.entries[:limit]
+        return []
+    except Exception as e:
+        logging.error(f"Reddit fetch error: {e}")
         return []
 
 async def check_reddit_job(context: ContextTypes.DEFAULT_TYPE):
@@ -37,8 +45,10 @@ async def check_reddit_job(context: ContextTypes.DEFAULT_TYPE):
     for entry in reversed(entries):
         if entry.id not in sent_posts:
             text = f"🚀 **Новое в r/ArcRaiders**\n\n🔗 [{entry.title}]({entry.link})"
-            await context.bot.send_message(chat_id=CHANNEL_ID, text=text, parse_mode="Markdown")
-            sent_posts.add(entry.id)
+            try:
+                await context.bot.send_message(chat_id=CHANNEL_ID, text=text, parse_mode="Markdown")
+                sent_posts.add(entry.id)
+            except: pass
     if len(sent_posts) > 100: sent_posts = list(sent_posts)[-50:]
 
 # --- TMDB API ---
@@ -59,7 +69,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [KeyboardButton("🔥 Популярные"), KeyboardButton("🆕 Новинки")],
         [KeyboardButton("🎲 Рандом"), KeyboardButton("📰 Новости ARC")]
     ]
-    await update.message.reply_text("🎬 *CineIntellect v51.13.8*\nДобавлена лента новостей ARC!", 
+    await update.message.reply_text("🎬 *CineIntellect v51.13.9*\nТеперь новости подгружаются корректно.", 
                                    reply_markup=ReplyKeyboardMarkup(kbd, resize_keyboard=True), parse_mode="Markdown")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -68,9 +78,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
 
     if text == "📰 Новости ARC":
+        await update.message.reply_chat_action("typing") # Эффект печати
         entries = await get_reddit_news(10)
         if not entries:
-            await update.message.reply_text("📭 Пока новостей нет.")
+            await update.message.reply_text("📭 Не удалось получить новости. Попробуйте позже.")
             return
         msg = "🗞 **Последние новости Arc Raiders:**\n\n"
         for i, e in enumerate(entries, 1):
