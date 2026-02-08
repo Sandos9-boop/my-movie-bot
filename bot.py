@@ -23,19 +23,23 @@ def run_health_check():
     server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
     server.serve_forever()
 
-# --- REDDIT ---
-async def check_reddit(context: ContextTypes.DEFAULT_TYPE):
-    global sent_posts
+# --- REDDIT LOGIC ---
+async def get_reddit_news(limit=10):
     try:
         feed = feedparser.parse(f"{REDDIT_RSS}?t={random.random()}", agent='Mozilla/5.0')
-        if not feed or not feed.entries: return
-        for entry in reversed(feed.entries[:3]):
-            if entry.id not in sent_posts:
-                text = f"🚀 **Новое в r/ArcRaiders**\n\n🔗 [{entry.title}]({entry.link})"
-                await context.bot.send_message(chat_id=CHANNEL_ID, text=text, parse_mode="Markdown")
-                sent_posts.add(entry.id)
-        if len(sent_posts) > 100: sent_posts = list(sent_posts)[-50:]
-    except Exception as e: logging.error(f"Reddit error: {e}")
+        return feed.entries[:limit]
+    except:
+        return []
+
+async def check_reddit_job(context: ContextTypes.DEFAULT_TYPE):
+    global sent_posts
+    entries = await get_reddit_news(3)
+    for entry in reversed(entries):
+        if entry.id not in sent_posts:
+            text = f"🚀 **Новое в r/ArcRaiders**\n\n🔗 [{entry.title}]({entry.link})"
+            await context.bot.send_message(chat_id=CHANNEL_ID, text=text, parse_mode="Markdown")
+            sent_posts.add(entry.id)
+    if len(sent_posts) > 100: sent_posts = list(sent_posts)[-50:]
 
 # --- TMDB API ---
 async def fetch_tmdb(endpoint, params={}):
@@ -51,8 +55,11 @@ async def fetch_tmdb(endpoint, params={}):
 
 # --- КОМАНДЫ ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kbd = [[KeyboardButton("🔥 Популярные"), KeyboardButton("🆕 Новинки")], [KeyboardButton("🎲 Рандом")]]
-    await update.message.reply_text("🎬 *CineIntellect v51.13.7*\nИсправлен переход к сериалам и фильмам.", 
+    kbd = [
+        [KeyboardButton("🔥 Популярные"), KeyboardButton("🆕 Новинки")],
+        [KeyboardButton("🎲 Рандом"), KeyboardButton("📰 Новости ARC")]
+    ]
+    await update.message.reply_text("🎬 *CineIntellect v51.13.8*\nДобавлена лента новостей ARC!", 
                                    reply_markup=ReplyKeyboardMarkup(kbd, resize_keyboard=True), parse_mode="Markdown")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -60,7 +67,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     chat_id = update.effective_chat.id
 
-    if text == "🔥 Популярные":
+    if text == "📰 Новости ARC":
+        entries = await get_reddit_news(10)
+        if not entries:
+            await update.message.reply_text("📭 Пока новостей нет.")
+            return
+        msg = "🗞 **Последние новости Arc Raiders:**\n\n"
+        for i, e in enumerate(entries, 1):
+            msg += f"{i}. [{e.title}]({e.link})\n\n"
+        await update.message.reply_text(msg, parse_mode="Markdown", disable_web_page_preview=True)
+
+    elif text == "🔥 Популярные":
         data = await fetch_tmdb("trending/movie/week")
         await send_list(chat_id, context, "🔥 В тренде:", data.get('results', []), "movie")
     elif text == "🆕 Новинки":
@@ -93,8 +110,6 @@ async def show_card(chat_id, context, mid, m_type):
     if not m: return
     title = m.get('title') or m.get('name')
     yt_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(title + ' трейлер')}"
-    
-    # Добавляем уточнение для Google, если это сериал
     q_suffix = " смотреть онлайн" if m_type == "movie" else " сериал смотреть онлайн"
     google_url = f"https://www.google.com/search?q={urllib.parse.quote(title + q_suffix)}"
     
@@ -126,15 +141,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for c in all_works:
             mid = c.get('id')
             title = c.get('title') or c.get('name') or ""
-            # Сохраняем и id, и реальный тип (movie или tv)
             m_type = c.get('media_type', 'movie')
             if mid not in unique_works and not any(w in title.lower() for w in stop_words):
                 unique_works[mid] = {"title": title, "type": m_type, "pop": c.get('popularity', 0)}
         
-        sorted_works = sorted(unique_works.values(), key=lambda x: x['pop'], reverse=True)[:30]
-        
-        # Передаем правильный m_type в callback_data
-        kbd = [[InlineKeyboardButton(f"🎬 {w['title']}", callback_data=f"{w['type']}:{mid}")] for mid, w in zip(unique_works.keys(), sorted_works)]
+        sorted_works = sorted(unique_works.items(), key=lambda x: x[1]['pop'], reverse=True)[:30]
+        kbd = [[InlineKeyboardButton(f"🎬 {w['title']}", callback_data=f"{w['type']}:{mid}")] for mid, w in sorted_works]
         
         photo = f"https://image.tmdb.org/t/p/w500{p.get('profile_path')}"
         if p.get('profile_path'): await context.bot.send_photo(chat_id, photo, bio, reply_markup=InlineKeyboardMarkup(kbd), parse_mode="Markdown")
@@ -151,7 +163,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 if __name__ == "__main__":
     threading.Thread(target=run_health_check, daemon=True).start()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    if app.job_queue: app.job_queue.run_repeating(check_reddit, interval=600, first=10)
+    if app.job_queue: 
+        app.job_queue.run_repeating(check_reddit_job, interval=600, first=10)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
