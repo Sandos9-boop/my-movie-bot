@@ -52,7 +52,7 @@ async def fetch_tmdb(endpoint, params={}):
 # --- КОМАНДЫ ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kbd = [[KeyboardButton("🔥 Популярные"), KeyboardButton("🆕 Новинки")], [KeyboardButton("🎲 Рандом")]]
-    await update.message.reply_text("🎬 *CineIntellect v51.13.6*\nПоиск по 30 фильмам настроен.", 
+    await update.message.reply_text("🎬 *CineIntellect v51.13.7*\nИсправлен переход к сериалам и фильмам.", 
                                    reply_markup=ReplyKeyboardMarkup(kbd, resize_keyboard=True), parse_mode="Markdown")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -93,7 +93,10 @@ async def show_card(chat_id, context, mid, m_type):
     if not m: return
     title = m.get('title') or m.get('name')
     yt_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(title + ' трейлер')}"
-    google_url = f"https://www.google.com/search?q={urllib.parse.quote(title + ' смотреть онлайн')}"
+    
+    # Добавляем уточнение для Google, если это сериал
+    q_suffix = " смотреть онлайн" if m_type == "movie" else " сериал смотреть онлайн"
+    google_url = f"https://www.google.com/search?q={urllib.parse.quote(title + q_suffix)}"
     
     cap = f"🎥 *{title}*\n⭐ Рейтинг: {m.get('vote_average', 0):.1f}\n\n{m.get('overview', 'Описания нет.')[:800]}"
     kbd = [
@@ -113,28 +116,25 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if q.data.startswith("person:"):
         pid = q.data.split(":")[1]
         p = await fetch_tmdb(f"person/{pid}")
-        # Получаем и актерские, и режиссерские работы
         credits = await fetch_tmdb(f"person/{pid}/combined_credits")
-        
         bio = f"👤 *{p.get('name')}*\n🎂 {p.get('birthday', '-')}\n\n🎬 *Топ-30 работ:* "
         
-        # Объединяем cast и crew (для режиссеров)
         all_works = credits.get('cast', []) + credits.get('crew', [])
-        
-        # Фильтруем откровенный мусор
         stop_words = ["awards", "ceremony", "grammy", "oscar", "special", "documentary", "pre-show"]
         unique_works = {}
         
         for c in all_works:
             mid = c.get('id')
             title = c.get('title') or c.get('name') or ""
+            # Сохраняем и id, и реальный тип (movie или tv)
+            m_type = c.get('media_type', 'movie')
             if mid not in unique_works and not any(w in title.lower() for w in stop_words):
-                unique_works[mid] = c
+                unique_works[mid] = {"title": title, "type": m_type, "pop": c.get('popularity', 0)}
         
-        # Сортируем по популярности и берем 30
-        sorted_works = sorted(unique_works.values(), key=lambda x: x.get('popularity', 0), reverse=True)[:30]
+        sorted_works = sorted(unique_works.values(), key=lambda x: x['pop'], reverse=True)[:30]
         
-        kbd = [[InlineKeyboardButton(f"🎬 {w.get('title') or w.get('name')}", callback_data=f"movie:{w['id']}")] for w in sorted_works]
+        # Передаем правильный m_type в callback_data
+        kbd = [[InlineKeyboardButton(f"🎬 {w['title']}", callback_data=f"{w['type']}:{mid}")] for mid, w in zip(unique_works.keys(), sorted_works)]
         
         photo = f"https://image.tmdb.org/t/p/w500{p.get('profile_path')}"
         if p.get('profile_path'): await context.bot.send_photo(chat_id, photo, bio, reply_markup=InlineKeyboardMarkup(kbd), parse_mode="Markdown")
@@ -151,10 +151,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 if __name__ == "__main__":
     threading.Thread(target=run_health_check, daemon=True).start()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    
-    if app.job_queue: 
-        app.job_queue.run_repeating(check_reddit, interval=600, first=10)
-    
+    if app.job_queue: app.job_queue.run_repeating(check_reddit, interval=600, first=10)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
