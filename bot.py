@@ -17,32 +17,41 @@ translator = GoogleTranslator(source='en', target='ru')
 # --- СЕРВЕР-БУДИЛЬНИК ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200); self.end_headers()
-        self.wfile.write(b"Bot is active")
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b"Bot is awake and running")
+    def log_message(self, format, *args): return
 
 def run_health_check():
     port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
     server.serve_forever()
 
-# --- ПЕРЕВОД (с защитой от зависания) ---
-def safe_translate(text):
+# --- УЛУЧШЕННЫЙ ПЕРЕВОД (ТВОЙ КОД) ---
+async def safe_translate(text):
     if not text: return ""
     try:
-        # Ограничиваем длину для перевода в кнопке, чтобы было быстрее
-        return translator.translate(text[:200])
-    except:
+        loop = asyncio.get_event_loop()
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, translator.translate, text[:200]),
+            timeout=5.0
+        )
+    except asyncio.TimeoutError:
+        logging.warning("Translation timeout")
+        return text
+    except Exception as e:
+        logging.error(f"Translation error: {e}")
         return text
 
 # --- ЛОГИКА REDDIT ---
 async def get_reddit_news(limit=10):
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        headers = {'User-Agent': 'Mozilla/5.0'}
         async with aiohttp.ClientSession(headers=headers) as session:
             async with session.get(f"{REDDIT_RSS}?t={random.random()}", timeout=10) as resp:
                 if resp.status == 200:
-                    text = await resp.text()
-                    feed = feedparser.parse(text)
+                    feed = feedparser.parse(await resp.text())
                     return feed.entries[:limit]
         return []
     except Exception as e:
@@ -54,12 +63,13 @@ async def check_reddit_job(context: ContextTypes.DEFAULT_TYPE):
     entries = await get_reddit_news(3)
     for entry in reversed(entries):
         if entry.id not in sent_posts:
-            rus_title = safe_translate(entry.title)
+            rus_title = await safe_translate(entry.title) # Используем новый асинхронный перевод
             text = f"🚀 **Новое в r/ArcRaiders**\n\n🇷🇺 {rus_title}\n🇬🇧 _{entry.title}_\n\n🔗 [Открыть на Reddit]({entry.link})"
             try:
                 await context.bot.send_message(chat_id=CHANNEL_ID, text=text, parse_mode="Markdown")
                 sent_posts.add(entry.id)
-            except: pass
+            except Exception as e:
+                logging.error(f"Failed to send Reddit post: {e}") # Твой лог ошибок
     if len(sent_posts) > 100: sent_posts = list(sent_posts)[-50:]
 
 # --- TMDB API ---
@@ -74,10 +84,10 @@ async def fetch_tmdb(endpoint, params={}):
         except: pass
         return {}
 
-# --- КОМАНДЫ ---
+# --- КОМАНДЫ (БЕЗ ИЗМЕНЕНИЙ) ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kbd = [[KeyboardButton("🔥 Популярные"), KeyboardButton("🆕 Новинки")], [KeyboardButton("🎲 Рандом"), KeyboardButton("📰 Новости ARC")]]
-    await update.message.reply_text("🎬 *CineIntellect v51.14.1*\nКнопка новостей исправлена.", 
+    await update.message.reply_text("🎬 *CineIntellect v51.14.3*\nПрименены улучшения стабильности перевода.", 
                                    reply_markup=ReplyKeyboardMarkup(kbd, resize_keyboard=True), parse_mode="Markdown")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -89,12 +99,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_chat_action("typing")
         entries = await get_reddit_news(10)
         if not entries:
-            await update.message.reply_text("📭 Reddit временно недоступен. Попробуйте через минуту.")
+            await update.message.reply_text("📭 Reddit временно недоступен.")
             return
-        
         msg = "🗞 **Последние новости Arc Raiders:**\n\n"
         for i, e in enumerate(entries, 1):
-            # В списке новостей сначала выводим оригинал, так как перевод 10 штук может быть долгим
             msg += f"{i}. [{e.title}]({e.link})\n\n"
         await update.message.reply_text(msg, parse_mode="Markdown", disable_web_page_preview=True)
 
@@ -133,7 +141,6 @@ async def show_card(chat_id, context, mid, m_type):
     yt_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(title + ' трейлер')}"
     q_suffix = " смотреть онлайн" if m_type == "movie" else " сериал смотреть онлайн"
     google_url = f"https://www.google.com/search?q={urllib.parse.quote(title + q_suffix)}"
-    
     cap = f"🎥 *{title}*\n⭐ Рейтинг: {m.get('vote_average', 0):.1f}\n\n{m.get('overview', 'Описания нет.')[:800]}"
     kbd = [[InlineKeyboardButton("📺 Трейлер", url=yt_url), InlineKeyboardButton("🌐 Смотреть онлайн", url=google_url)],
            [InlineKeyboardButton("🎭 Похожее", callback_data=f"similar:{m_type}:{mid}")]]
@@ -178,5 +185,4 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("🚀 БОТ ЗАПУЩЕН!")
     app.run_polling(drop_pending_updates=True)
