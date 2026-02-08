@@ -6,7 +6,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandle
 # --- НАСТРОЙКИ ---
 BOT_TOKEN = "8262668090:AAE3UJkjIeEVPKotGV1HfGyfkWtNP9TDnaQ"
 TMDB_API_KEY = "043f357a705bad3b63ba075408d399a2"
-CHANNEL_ID = "@CineDigests"
+CHANNEL_ID = "@CineDigests" # Убедись, что бот админ в этом канале!
 REDDIT_RSS = "https://www.reddit.com/r/ArcRaiders/new/.rss"
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -27,19 +27,14 @@ def run_health_check():
 async def check_reddit(context: ContextTypes.DEFAULT_TYPE):
     global sent_posts
     try:
-        # Добавляем случайный параметр к URL, чтобы обойти кеширование
         feed = feedparser.parse(f"{REDDIT_RSS}?t={random.random()}", agent='Mozilla/5.0')
         if not feed or not feed.entries: return
-        
-        # Берем последние 3 поста
         for entry in reversed(feed.entries[:3]):
             if entry.id not in sent_posts:
                 text = f"🚀 **Новое в r/ArcRaiders**\n\n🔗 [{entry.title}]({entry.link})"
                 await context.bot.send_message(chat_id=CHANNEL_ID, text=text, parse_mode="Markdown")
                 sent_posts.add(entry.id)
-                logging.info(f"Новость отправлена: {entry.title}")
-        
-        if len(sent_posts) > 100: sent_posts = set(list(sent_posts)[-50:])
+        if len(sent_posts) > 100: sent_posts = list(sent_posts)[-50:]
     except Exception as e: logging.error(f"Reddit error: {e}")
 
 # --- TMDB API ---
@@ -57,7 +52,7 @@ async def fetch_tmdb(endpoint, params={}):
 # --- КОМАНДЫ ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kbd = [[KeyboardButton("🔥 Популярные"), KeyboardButton("🆕 Новинки")], [KeyboardButton("🎲 Рандом")]]
-    await update.message.reply_text("🎬 *CineIntellect v51.13.4*\nСистема поиска и новостей обновлена.", 
+    await update.message.reply_text("🎬 *CineIntellect v51.13.5*\nГотов к работе!", 
                                    reply_markup=ReplyKeyboardMarkup(kbd, resize_keyboard=True), parse_mode="Markdown")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -69,6 +64,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data = await fetch_tmdb("trending/movie/week")
         await send_list(chat_id, context, "🔥 В тренде:", data.get('results', []), "movie")
     elif text == "🆕 Новинки":
+        # ТЕСТ КАНАЛА: при нажатии на Новинки бот попробует отправить сообщение в канал
+        try:
+            await context.bot.send_message(chat_id=CHANNEL_ID, text="⚙️ Тест связи: Бот видит канал и может в него писать.")
+        except Exception as e:
+            await update.message.reply_text(f"⚠️ Ошибка канала: {e}\nПроверь, что бот админ в {CHANNEL_ID}")
+        
         data = await fetch_tmdb("movie/now_playing")
         await send_list(chat_id, context, "🆕 Сейчас в кино:", data.get('results', []), "movie")
     elif text == "🎲 Рандом":
@@ -98,8 +99,15 @@ async def show_card(chat_id, context, mid, m_type):
     if not m: return
     title = m.get('title') or m.get('name')
     yt_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(title + ' трейлер')}"
+    google_url = f"https://www.google.com/search?q={urllib.parse.quote(title + ' смотреть онлайн')}"
+    
     cap = f"🎥 *{title}*\n⭐ Рейтинг: {m.get('vote_average', 0):.1f}\n\n{m.get('overview', 'Описания нет.')[:800]}"
-    kbd = [[InlineKeyboardButton("📺 Трейлер", url=yt_url), InlineKeyboardButton("🎭 Похожее", callback_data=f"similar:{m_type}:{mid}")]]
+    
+    kbd = [
+        [InlineKeyboardButton("📺 Трейлер", url=yt_url), InlineKeyboardButton("🌐 Смотреть онлайн", url=google_url)],
+        [InlineKeyboardButton("🎭 Похожее", callback_data=f"similar:{m_type}:{mid}")]
+    ]
+    
     poster = f"https://image.tmdb.org/t/p/w500{m.get('poster_path')}"
     try:
         if m.get('poster_path'): await context.bot.send_photo(chat_id, poster, cap, reply_markup=InlineKeyboardMarkup(kbd), parse_mode="Markdown")
@@ -115,32 +123,15 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         p = await fetch_tmdb(f"person/{pid}")
         credits = await fetch_tmdb(f"person/{pid}/combined_credits")
         
-        bio = f"👤 *{p.get('name')}*\n🎂 {p.get('birthday', '-')}\n\n🎬 *Лучшие работы (фильмы):*"
+        bio = f"👤 *{p.get('name')}*\n🎂 {p.get('birthday', '-')}\n\n🎬 *Лучшие работы (30 фильмов):*"
         
-        # Фильтруем: только фильмы + убираем премии и шоу
         raw_cast = credits.get('cast', [])
-        clean_cast = []
         stop_words = ["awards", "ceremony", "grammy", "oscar", "special", "documentary", "pre-show", "night of"]
         
-        for c in raw_cast:
-            title = c.get('title') or c.get('name') or ""
-            # Проверка на тип "фильм" и отсутствие стоп-слов
-            if c.get('media_type') == 'movie' and not any(word in title.lower() for word in stop_words):
-                clean_cast.append(c)
-        
-        # Сортируем по популярности и берем 30 работ
+        clean_cast = [c for c in raw_cast if c.get('media_type') == 'movie' and not any(w in (c.get('title') or "").lower() for w in stop_words)]
         cast = sorted(clean_cast, key=lambda x: x.get('popularity', 0), reverse=True)[:30]
         
-        # Формируем кнопки (сетка по 2 для экономии места)
-        kbd = []
-        row = []
-        for c in cast:
-            btn_text = c.get('title') or c.get('name')
-            row.append(InlineKeyboardButton(f"🎬 {btn_text[:15]}...", callback_data=f"movie:{c['id']}"))
-            if len(row) == 2:
-                kbd.append(row)
-                row = []
-        if row: kbd.append(row)
+        kbd = [[InlineKeyboardButton(f"🎬 {c.get('title')[:30]}", callback_data=f"movie:{c['id']}")] for c in cast]
         
         photo = f"https://image.tmdb.org/t/p/w500{p.get('profile_path')}"
         if p.get('profile_path'): await context.bot.send_photo(chat_id, photo, bio, reply_markup=InlineKeyboardMarkup(kbd), parse_mode="Markdown")
@@ -158,9 +149,8 @@ if __name__ == "__main__":
     threading.Thread(target=run_health_check, daemon=True).start()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     
-    # Настройка Reddit: проверка каждую минуту для теста, первый запуск через 5 сек
     if app.job_queue: 
-        app.job_queue.run_repeating(check_reddit, interval=60, first=5)
+        app.job_queue.run_repeating(check_reddit, interval=600, first=10)
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(callback_handler))
