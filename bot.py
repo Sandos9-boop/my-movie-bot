@@ -27,13 +27,18 @@ def run_health_check():
 async def check_reddit(context: ContextTypes.DEFAULT_TYPE):
     global sent_posts
     try:
-        feed = feedparser.parse(REDDIT_RSS, agent='Mozilla/5.0')
+        # Добавляем случайный параметр к URL, чтобы обойти кеширование
+        feed = feedparser.parse(f"{REDDIT_RSS}?t={random.random()}", agent='Mozilla/5.0')
         if not feed or not feed.entries: return
+        
+        # Берем последние 3 поста
         for entry in reversed(feed.entries[:3]):
             if entry.id not in sent_posts:
                 text = f"🚀 **Новое в r/ArcRaiders**\n\n🔗 [{entry.title}]({entry.link})"
                 await context.bot.send_message(chat_id=CHANNEL_ID, text=text, parse_mode="Markdown")
                 sent_posts.add(entry.id)
+                logging.info(f"Новость отправлена: {entry.title}")
+        
         if len(sent_posts) > 100: sent_posts = set(list(sent_posts)[-50:])
     except Exception as e: logging.error(f"Reddit error: {e}")
 
@@ -52,7 +57,7 @@ async def fetch_tmdb(endpoint, params={}):
 # --- КОМАНДЫ ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kbd = [[KeyboardButton("🔥 Популярные"), KeyboardButton("🆕 Новинки")], [KeyboardButton("🎲 Рандом")]]
-    await update.message.reply_text("🎬 *CineIntellect v51.13.3*\nВсе системы активны!", 
+    await update.message.reply_text("🎬 *CineIntellect v51.13.4*\nСистема поиска и новостей обновлена.", 
                                    reply_markup=ReplyKeyboardMarkup(kbd, resize_keyboard=True), parse_mode="Markdown")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -104,16 +109,43 @@ async def show_card(chat_id, context, mid, m_type):
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     chat_id = update.effective_chat.id
+    
     if q.data.startswith("person:"):
         pid = q.data.split(":")[1]
         p = await fetch_tmdb(f"person/{pid}")
         credits = await fetch_tmdb(f"person/{pid}/combined_credits")
-        bio = f"👤 *{p.get('name')}*\n🎂 {p.get('birthday', '-')}\n\n🎬 *Известен за:* "
-        cast = sorted(credits.get('cast', []), key=lambda x: x.get('popularity', 0), reverse=True)[:5]
-        kbd = [[InlineKeyboardButton(f"🎬 {c.get('title') or c.get('name')}", callback_data=f"{c.get('media_type','movie')}:{c['id']}")] for c in cast]
+        
+        bio = f"👤 *{p.get('name')}*\n🎂 {p.get('birthday', '-')}\n\n🎬 *Лучшие работы (фильмы):*"
+        
+        # Фильтруем: только фильмы + убираем премии и шоу
+        raw_cast = credits.get('cast', [])
+        clean_cast = []
+        stop_words = ["awards", "ceremony", "grammy", "oscar", "special", "documentary", "pre-show", "night of"]
+        
+        for c in raw_cast:
+            title = c.get('title') or c.get('name') or ""
+            # Проверка на тип "фильм" и отсутствие стоп-слов
+            if c.get('media_type') == 'movie' and not any(word in title.lower() for word in stop_words):
+                clean_cast.append(c)
+        
+        # Сортируем по популярности и берем 30 работ
+        cast = sorted(clean_cast, key=lambda x: x.get('popularity', 0), reverse=True)[:30]
+        
+        # Формируем кнопки (сетка по 2 для экономии места)
+        kbd = []
+        row = []
+        for c in cast:
+            btn_text = c.get('title') or c.get('name')
+            row.append(InlineKeyboardButton(f"🎬 {btn_text[:15]}...", callback_data=f"movie:{c['id']}"))
+            if len(row) == 2:
+                kbd.append(row)
+                row = []
+        if row: kbd.append(row)
+        
         photo = f"https://image.tmdb.org/t/p/w500{p.get('profile_path')}"
         if p.get('profile_path'): await context.bot.send_photo(chat_id, photo, bio, reply_markup=InlineKeyboardMarkup(kbd), parse_mode="Markdown")
         else: await context.bot.send_message(chat_id, bio, reply_markup=InlineKeyboardMarkup(kbd), parse_mode="Markdown")
+        
     elif q.data.startswith("similar:"):
         _, m_type, mid = q.data.split(":")
         res = await fetch_tmdb(f"{m_type}/{mid}/recommendations")
@@ -125,7 +157,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 if __name__ == "__main__":
     threading.Thread(target=run_health_check, daemon=True).start()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    if app.job_queue: app.job_queue.run_repeating(check_reddit, interval=900, first=10)
+    
+    # Настройка Reddit: проверка каждую минуту для теста, первый запуск через 5 сек
+    if app.job_queue: 
+        app.job_queue.run_repeating(check_reddit, interval=60, first=5)
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
