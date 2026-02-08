@@ -6,7 +6,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandle
 # --- НАСТРОЙКИ ---
 BOT_TOKEN = "8262668090:AAE3UJkjIeEVPKotGV1HfGyfkWtNP9TDnaQ"
 TMDB_API_KEY = "043f357a705bad3b63ba075408d399a2"
-CHANNEL_ID = "@CineDigests" # Убедись, что бот админ в этом канале!
+CHANNEL_ID = "@CineDigests"
 REDDIT_RSS = "https://www.reddit.com/r/ArcRaiders/new/.rss"
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -52,7 +52,7 @@ async def fetch_tmdb(endpoint, params={}):
 # --- КОМАНДЫ ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kbd = [[KeyboardButton("🔥 Популярные"), KeyboardButton("🆕 Новинки")], [KeyboardButton("🎲 Рандом")]]
-    await update.message.reply_text("🎬 *CineIntellect v51.13.5*\nГотов к работе!", 
+    await update.message.reply_text("🎬 *CineIntellect v51.13.6*\nПоиск по 30 фильмам настроен.", 
                                    reply_markup=ReplyKeyboardMarkup(kbd, resize_keyboard=True), parse_mode="Markdown")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -64,12 +64,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data = await fetch_tmdb("trending/movie/week")
         await send_list(chat_id, context, "🔥 В тренде:", data.get('results', []), "movie")
     elif text == "🆕 Новинки":
-        # ТЕСТ КАНАЛА: при нажатии на Новинки бот попробует отправить сообщение в канал
-        try:
-            await context.bot.send_message(chat_id=CHANNEL_ID, text="⚙️ Тест связи: Бот видит канал и может в него писать.")
-        except Exception as e:
-            await update.message.reply_text(f"⚠️ Ошибка канала: {e}\nПроверь, что бот админ в {CHANNEL_ID}")
-        
         data = await fetch_tmdb("movie/now_playing")
         await send_list(chat_id, context, "🆕 Сейчас в кино:", data.get('results', []), "movie")
     elif text == "🎲 Рандом":
@@ -102,12 +96,10 @@ async def show_card(chat_id, context, mid, m_type):
     google_url = f"https://www.google.com/search?q={urllib.parse.quote(title + ' смотреть онлайн')}"
     
     cap = f"🎥 *{title}*\n⭐ Рейтинг: {m.get('vote_average', 0):.1f}\n\n{m.get('overview', 'Описания нет.')[:800]}"
-    
     kbd = [
         [InlineKeyboardButton("📺 Трейлер", url=yt_url), InlineKeyboardButton("🌐 Смотреть онлайн", url=google_url)],
         [InlineKeyboardButton("🎭 Похожее", callback_data=f"similar:{m_type}:{mid}")]
     ]
-    
     poster = f"https://image.tmdb.org/t/p/w500{m.get('poster_path')}"
     try:
         if m.get('poster_path'): await context.bot.send_photo(chat_id, poster, cap, reply_markup=InlineKeyboardMarkup(kbd), parse_mode="Markdown")
@@ -121,17 +113,28 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if q.data.startswith("person:"):
         pid = q.data.split(":")[1]
         p = await fetch_tmdb(f"person/{pid}")
+        # Получаем и актерские, и режиссерские работы
         credits = await fetch_tmdb(f"person/{pid}/combined_credits")
         
-        bio = f"👤 *{p.get('name')}*\n🎂 {p.get('birthday', '-')}\n\n🎬 *Лучшие работы (30 фильмов):*"
+        bio = f"👤 *{p.get('name')}*\n🎂 {p.get('birthday', '-')}\n\n🎬 *Топ-30 работ:* "
         
-        raw_cast = credits.get('cast', [])
-        stop_words = ["awards", "ceremony", "grammy", "oscar", "special", "documentary", "pre-show", "night of"]
+        # Объединяем cast и crew (для режиссеров)
+        all_works = credits.get('cast', []) + credits.get('crew', [])
         
-        clean_cast = [c for c in raw_cast if c.get('media_type') == 'movie' and not any(w in (c.get('title') or "").lower() for w in stop_words)]
-        cast = sorted(clean_cast, key=lambda x: x.get('popularity', 0), reverse=True)[:30]
+        # Фильтруем откровенный мусор
+        stop_words = ["awards", "ceremony", "grammy", "oscar", "special", "documentary", "pre-show"]
+        unique_works = {}
         
-        kbd = [[InlineKeyboardButton(f"🎬 {c.get('title')[:30]}", callback_data=f"movie:{c['id']}")] for c in cast]
+        for c in all_works:
+            mid = c.get('id')
+            title = c.get('title') or c.get('name') or ""
+            if mid not in unique_works and not any(w in title.lower() for w in stop_words):
+                unique_works[mid] = c
+        
+        # Сортируем по популярности и берем 30
+        sorted_works = sorted(unique_works.values(), key=lambda x: x.get('popularity', 0), reverse=True)[:30]
+        
+        kbd = [[InlineKeyboardButton(f"🎬 {w.get('title') or w.get('name')}", callback_data=f"movie:{w['id']}")] for w in sorted_works]
         
         photo = f"https://image.tmdb.org/t/p/w500{p.get('profile_path')}"
         if p.get('profile_path'): await context.bot.send_photo(chat_id, photo, bio, reply_markup=InlineKeyboardMarkup(kbd), parse_mode="Markdown")
