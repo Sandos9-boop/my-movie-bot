@@ -11,7 +11,7 @@ REDDIT_RSS = "https://www.reddit.com/r/ArcRaiders/new/.rss"
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# Список для хранения уже отправленных постов (чтобы не дублировать)
+# Список для хранения уже отправленных постов
 sent_posts = set()
 
 # --- СЕРВЕР-БУДИЛЬНИК ДЛЯ RENDER ---
@@ -31,18 +31,13 @@ def run_health_check():
 async def check_reddit(context: ContextTypes.DEFAULT_TYPE):
     global sent_posts
     try:
-        # Reddit просит User-Agent, чтобы не блокировать бота
         feed = feedparser.parse(REDDIT_RSS, agent='Mozilla/5.0')
         if not feed.entries: return
-
-        # Проверяем последние 3 поста
         for entry in reversed(feed.entries[:3]):
             if entry.id not in sent_posts:
                 text = f"🚀 **Новое в r/ArcRaiders**\n\n🔗 [{entry.title}]({entry.link})"
                 await context.bot.send_message(chat_id=CHANNEL_ID, text=text, parse_mode="Markdown")
                 sent_posts.add(entry.id)
-                
-        # Очистка памяти (держим последние 100 ID)
         if len(sent_posts) > 100:
             sent_posts = set(list(sent_posts)[-50:])
     except Exception as e:
@@ -60,12 +55,12 @@ async def fetch_tmdb(endpoint, params={}):
         except: pass
         return {}
 
-# --- КОМАНДЫ БОТА (Всё сохранено!) ---
+# --- КОМАНДЫ БОТА ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kbd = [[KeyboardButton("🔥 Популярные"), KeyboardButton("🆕 Новинки")],
            [KeyboardButton("📅 По годам"), KeyboardButton("🎲 Рандом")],
            [KeyboardButton("📌 Мой список")]]
-    await update.message.reply_text("🎬 *CineIntellect v51.13.0*\nФильмы + Новости Arc Raiders активны!", 
+    await update.message.reply_text("🎬 *CineIntellect v51.13.1*\nФильмы + Новости Arc Raiders активны!", 
                                    reply_markup=ReplyKeyboardMarkup(kbd, resize_keyboard=True), parse_mode="Markdown")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -141,15 +136,19 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- ЗАПУСК ---
 if __name__ == "__main__":
     threading.Thread(target=run_health_check, daemon=True).start()
+    # Инициализация приложения с поддержкой JobQueue
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     
-    # Настраиваем фоновую проверку Reddit каждые 900 секунд (15 минут)
-    job_queue = app.job_queue
-    job_queue.run_repeating(check_reddit, interval=900, first=10)
+    # Безопасная настройка фоновой проверки
+    if app.job_queue:
+        app.job_queue.run_repeating(check_reddit, interval=900, first=10)
+        print("✅ Планировщик Reddit запущен")
+    else:
+        print("⚠️ JobQueue не активен (проверь установку библиотеки)")
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("🚀 БОТ v51.13.0 ЗАПУЩЕН!")
+    print("🚀 БОТ v51.13.1 ЗАПУЩЕН!")
     app.run_polling(drop_pending_updates=True)
